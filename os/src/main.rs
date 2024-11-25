@@ -36,11 +36,9 @@ use utils::clear_bss::clear_bss;
 pub fn rust_main() -> ! {
     clear_bss();
     println!("[kernel] Hello, world!");
-    println!("aa");
     mm::init();
     mm::remap_test();
     task::add_initproc();
-    println!("after initproc!");
     trap::init();
     // trap::enable_interrupt();
     trap::enable_timer_interrupt();

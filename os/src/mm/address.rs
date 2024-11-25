@@ -16,12 +16,15 @@ pub struct KernelAddr(pub usize);
 /// physical address
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PhysAddr(pub usize);
+
 /// virtual address
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct VirtAddr(pub usize);
+
 /// physical page number
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct PhysPageNum(pub usize);
+
 /// virtual page number
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub struct VirtPageNum(pub usize);
@@ -255,7 +258,7 @@ impl PhysPageNum {
         let kernel_va = KernelAddr::from(pa).0;
         unsafe { core::slice::from_raw_parts_mut(kernel_va as *mut PageTableEntry, 512) }
     }
-    ///
+    /// 以可变数组方式获取ppn对应物理页的内存
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
         let pa: PhysAddr = (*self).into();
         let kernel_va = KernelAddr::from(pa).0;
@@ -273,6 +276,7 @@ pub trait StepByOne {
     fn step(&mut self);
 }
 impl StepByOne for VirtPageNum {
+    /// 虚拟页号增加 1
     fn step(&mut self) {
         self.0 += 1;
     }

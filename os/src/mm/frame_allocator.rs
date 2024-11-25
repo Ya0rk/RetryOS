@@ -9,7 +9,7 @@ use lazy_static::*;
 
 /// manage a frame which has the same lifecycle as the tracker
 pub struct FrameTracker {
-    ///
+    /// 物理页号
     pub ppn: PhysPageNum,
 }
 
@@ -18,9 +18,8 @@ impl FrameTracker {
     pub fn new(ppn: PhysPageNum) -> Self {
         // page cleaning
         let bytes_array = ppn.get_bytes_array();
-        for i in bytes_array {
-            *i = 0;
-        }
+        // 清零
+        bytes_array.iter_mut().for_each(|x| *x = 0);
         Self { ppn }
     }
 }
@@ -31,6 +30,7 @@ impl Debug for FrameTracker {
     }
 }
 
+// RAII : 生命周期结束 自动回收ppn
 impl Drop for FrameTracker {
     fn drop(&mut self) {
         frame_dealloc(self.ppn);
@@ -70,6 +70,7 @@ impl FrameAllocator for StackFrameAllocator {
         }
     }
     fn alloc(&mut self) -> Option<PhysPageNum> {
+        // 先从回收箱寻找
         if let Some(ppn) = self.recycled.pop() {
             Some(ppn.into())
         } else if self.current == self.end {
@@ -97,6 +98,9 @@ lazy_static! {
     pub static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
         unsafe { UPSafeCell::new(FrameAllocatorImpl::new()) };
 }
+
+/// 对外接口
+
 /// initiate the frame allocator using `ekernel` and `MEMORY_END`
 pub fn init_frame_allocator() {
     extern "C" {

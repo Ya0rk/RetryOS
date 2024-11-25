@@ -36,6 +36,7 @@ lazy_static! {
         Arc::new(unsafe { UPSafeCell::new(MemorySet::new_kernel()) });
 }
 /// memory set structure, controls virtual-memory space
+/// 地址空间，一系列有关联的不一定连续的逻辑段
 pub struct MemorySet {
     page_table: PageTable,
     areas: Vec<MapArea>,
@@ -77,6 +78,7 @@ impl MemorySet {
             self.areas.remove(idx);
         }
     }
+    /// 将逻辑段压入，同时将数据写入物理内存
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
@@ -94,11 +96,29 @@ impl MemorySet {
     }
 
     /// Without kernel stacks.
-    /// 内核采用Direct映射到内存地址的高位： [0xffff_ffc0_0000_0000, 0xffff_ffff_ffff_ffff] 
+    /// 内核采用Direct映射到内存地址的高位： [0xffff_ffc0_0000_0000, 0xffff_ffff_ffff_ffff]
+    /// 内核虚拟地址格式：高->低
+    ///            high-> ------------------------
+    ///                   |      trampoline      |
+    ///                   |----------------------|
+    ///                   |       frames         |
+    ///                   |----------------------|
+    ///                   |      .bss            |
+    ///                   |----------------------|
+    ///                   |      .data           |
+    ///                   |----------------------|
+    ///                   |      .rodata         |  
+    ///                   |----------------------|
+    ///                   |      .text           |
+    ///                   |----------------------|
+    ///                   |       MMIO           |
+    ///             low-> |----------------------|
+    /// 
     pub fn new_kernel() -> Self {
         let mut memory_set = Self::new_bare();
         // map trampoline
         memory_set.map_trampoline();
+
         // map kernel sections
         println!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
         println!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
@@ -181,24 +201,32 @@ impl MemorySet {
 
     /// Include sections in elf and trampoline and TrapContext and user stack,
     /// also returns user_sp and entry point.
+    /// 创建应用地址空间
     pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
         let mut memory_set = Self::new_bare();
         // map trampoline
         memory_set.map_trampoline();
+
         // map program headers of elf, with U flag
+        // 使用外部 crate xmas_elf 来解析传入的应用 ELF 数据并可以轻松取出各个部分
         let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
         let elf_header = elf.header;
         let magic = elf_header.pt1.magic;
         assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
+        // 得到 program header 的数目
         let ph_count = elf_header.pt2.ph_count();
         let mut max_end_vpn = VirtPageNum(0);
+
         for i in 0..ph_count {
             let ph = elf.program_header(i).unwrap();
+            // 确认 program header 的类型是 LOAD ，这表明它有被内核加载的必要
             if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
                 let start_va: VirtAddr = (ph.virtual_addr() as usize).into();
                 let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
-                let mut map_perm = MapPermission::U;
+                let mut map_perm = MapPermission::U;// 用户地址空间默认包含 U 标志位
                 let ph_flags = ph.flags();
+
+                // 设置好flags
                 if ph_flags.is_read() {
                     map_perm |= MapPermission::R;
                 }
@@ -208,8 +236,11 @@ impl MemorySet {
                 if ph_flags.is_execute() {
                     map_perm |= MapPermission::X;
                 }
+
+                // 建立逻辑段，Framed，随机映射
                 let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
                 max_end_vpn = map_area.vpn_range.get_end();
+                // 将逻辑段push到用户地址空间，同时完成数据拷贝
                 memory_set.push(
                     map_area,
                     Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
@@ -219,9 +250,11 @@ impl MemorySet {
         // map user stack with U flags
         let max_end_va: VirtAddr = max_end_vpn.into();
         let mut user_stack_bottom: usize = max_end_va.into();
-        // guard page
+
+        // guard page，这里 + PAGE_SIZE，其实是设置了一个guard page
         user_stack_bottom += PAGE_SIZE;
         let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+
         memory_set.push(
             MapArea::new(
                 user_stack_bottom.into(),
@@ -241,6 +274,7 @@ impl MemorySet {
             ),
             None,
         );
+
         (
             memory_set,
             user_stack_top,
@@ -248,6 +282,7 @@ impl MemorySet {
         )
     }
     ///Clone a same `MemorySet`
+    /// 复制地址空间，可能在fork创建子进程中使用
     pub fn from_existed_user(user_space: &Self) -> Self {
         let mut memory_set = Self::new_bare();
         // map trampoline
@@ -286,6 +321,7 @@ impl MemorySet {
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory
+/// 逻辑段，地址区间中的一段实际可用（即 MMU 通过查多级页表可以正确完成地址转换）的地址连续的虚拟地址区间
 pub struct MapArea {
     vpn_range: VPNRange,
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
@@ -321,7 +357,7 @@ impl MapArea {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
-                panic!("check your memory space map type: should not Indentical.");
+                panic!("check your memory space map type: should not be Indentical.");
             }
             MapType::Direct =>{
                 ppn = PhysPageNum(vpn.0 - KERNEL_PGNUM_OFFSET);
@@ -353,6 +389,7 @@ impl MapArea {
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
+    /// 将数据拷贝到物理内存中
     pub fn copy_data(&mut self, page_table: &PageTable, data: &[u8]) {
         assert_eq!(self.map_type, MapType::Framed);
         let mut start: usize = 0;
@@ -383,6 +420,7 @@ pub enum MapType {
     Identical,
     /// 虚拟地址可以通过物理地址加上偏移直接得到，VPN = PPN + offset
     Direct,
+    /// 对于每个虚拟页面都有一个新分配的物理页帧与之对应，虚地址与物理地址的映射关系是相对随机的
     Framed,
 }
 

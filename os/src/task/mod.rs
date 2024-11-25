@@ -118,4 +118,5 @@ lazy_static! {
 ///Add init process to the manager
 pub fn add_initproc() {
     add_task(INITPROC.clone());
+    println!("after initproc!");
 }
