@@ -29,13 +29,14 @@ pub mod task;
 pub mod trap;
 pub mod utils;
 
-use utils::clear_bss::clear_bss;
+use utils::{clear_bss, logo};
 
 #[no_mangle]
 /// the rust entry-point of os
 pub fn rust_main() -> ! {
-    clear_bss();
+    clear_bss::clear_bss();
     println!("[kernel] Hello, world!");
+    logo::logo();
     mm::init();
     mm::remap_test();
     task::add_initproc();
